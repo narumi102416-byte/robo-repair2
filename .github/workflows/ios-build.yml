@@ -47,21 +47,102 @@ jobs:
       - name: Show Xcode version
         run: xcodebuild -version
 
-      - name: Build iOS Simulator app
+      - name: Install Apple signing files
+        env:
+          CERT_BASE64: ${{ secrets.IOS_DISTRIBUTION_P12_BASE64 }}
+          CERT_PASSWORD: ${{ secrets.IOS_DISTRIBUTION_P12_PASSWORD }}
+          PROFILE_BASE64: ${{ secrets.IOS_PROVISIONING_PROFILE_BASE64 }}
+        run: |
+          set -euo pipefail
+
+          CERT_PATH="$RUNNER_TEMP/distribution.p12"
+          PROFILE_PATH="$RUNNER_TEMP/app.mobileprovision"
+          PLIST_PATH="$RUNNER_TEMP/profile.plist"
+          KEYCHAIN_PATH="$RUNNER_TEMP/signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -hex 24)"
+
+          printf '%s' "$CERT_BASE64" | base64 --decode > "$CERT_PATH"
+          printf '%s' "$PROFILE_BASE64" | base64 --decode > "$PROFILE_PATH"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security default-keychain -s "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH"
+
+          security import "$CERT_PATH" \
+            -P "$CERT_PASSWORD" \
+            -A -t cert -f pkcs12 \
+            -k "$KEYCHAIN_PATH"
+
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: \
+            -k "$KEYCHAIN_PASSWORD" \
+            "$KEYCHAIN_PATH"
+
+          security cms -D -i "$PROFILE_PATH" > "$PLIST_PATH"
+
+          PROFILE_UUID=$(/usr/libexec/PlistBuddy -c "Print UUID" "$PLIST_PATH")
+          TEAM_ID=$(/usr/libexec/PlistBuddy -c "Print TeamIdentifier:0" "$PLIST_PATH")
+          PROFILE_APP_ID=$(/usr/libexec/PlistBuddy -c "Print Entitlements:application-identifier" "$PLIST_PATH")
+
+          if [[ "$PROFILE_APP_ID" != *".com.narumi102416.roborepair" ]]; then
+            echo "::error::Provisioning profile Bundle ID mismatch"
+            exit 1
+          fi
+
+          mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
+          cp "$PROFILE_PATH" "$HOME/Library/MobileDevice/Provisioning Profiles/$PROFILE_UUID.mobileprovision"
+
+          echo "TEAM_ID=$TEAM_ID" >> "$GITHUB_ENV"
+          echo "PROFILE_UUID=$PROFILE_UUID" >> "$GITHUB_ENV"
+
+      - name: Archive iOS app
         run: |
           xcodebuild \
             -project ios/App/App.xcodeproj \
             -scheme App \
-            -configuration Debug \
-            -sdk iphonesimulator \
-            -destination 'generic/platform=iOS Simulator' \
-            -derivedDataPath build \
-            CODE_SIGNING_ALLOWED=NO \
-            build
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$PWD/build/RoboRepair.xcarchive" \
+            DEVELOPMENT_TEAM="$TEAM_ID" \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY="Apple Distribution" \
+            PROVISIONING_PROFILE_SPECIFIER="$PROFILE_UUID" \
+            archive
 
-      - name: Save build result
+      - name: Export App Store IPA
+        run: |
+          mkdir -p build/export
+
+          python3 - <<'PY'
+          import os
+          import plistlib
+
+          options = {
+              "method": "app-store-connect",
+              "destination": "export",
+              "signingStyle": "manual",
+              "teamID": os.environ["TEAM_ID"],
+              "provisioningProfiles": {
+                  "com.narumi102416.roborepair": os.environ["PROFILE_UUID"]
+              }
+          }
+
+          with open("build/ExportOptions.plist", "wb") as f:
+              plistlib.dump(options, f)
+          PY
+
+          xcodebuild -exportArchive \
+            -archivePath "$PWD/build/RoboRepair.xcarchive" \
+            -exportPath "$PWD/build/export" \
+            -exportOptionsPlist "$PWD/build/ExportOptions.plist"
+
+      - name: Save IPA file
         uses: actions/upload-artifact@v4
         with:
-          name: RoboRepair-iOS-Simulator
-          path: build/Build/Products/Debug-iphonesimulator/App.app
+          name: RoboRepair-AppStore-IPA
+          path: build/export/*.ipa
           if-no-files-found: error
+          retention-days: 14
