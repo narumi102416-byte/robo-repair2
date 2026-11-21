@@ -7,6 +7,7 @@ on:
     branches: [main]
     paths:
       - 'index.html'
+      - 'RoboRepair_AppIcon_1024.png'
       - '.github/workflows/ios-build.yml'
 
 permissions:
@@ -27,6 +28,8 @@ jobs:
 
       - name: Prepare Capacitor project
         run: |
+          set -euo pipefail
+
           mkdir -p www
           cp index.html www/index.html
 
@@ -43,6 +46,49 @@ jobs:
           EOF
 
           npx cap add ios
+
+      # 正式アイコンを反映
+      - name: Set Robo Repair app icon
+        run: |
+          set -euo pipefail
+
+          ICON_SOURCE="RoboRepair_AppIcon_1024.png"
+          ICON_DIR="ios/App/App/Assets.xcassets/AppIcon.appiconset"
+
+          test -f "$ICON_SOURCE"
+          mkdir -p "$ICON_DIR"
+
+          cp "$ICON_SOURCE" "$ICON_DIR/AppIcon-512@2x.png"
+
+          cat > "$ICON_DIR/Contents.json" <<'EOF'
+          {
+            "images": [
+              {
+                "filename": "AppIcon-512@2x.png",
+                "idiom": "universal",
+                "platform": "ios",
+                "size": "1024x1024"
+              }
+            ],
+            "info": {
+              "author": "xcode",
+              "version": 1
+            }
+          }
+          EOF
+
+          echo "Robo Repair app icon installed!"
+
+      # ビルド番号を2に変更
+      - name: Set iOS build number
+        run: |
+          set -euo pipefail
+
+          /usr/libexec/PlistBuddy \
+            -c "Set :CFBundleVersion 2" \
+            ios/App/App/Info.plist
+
+          echo "iOS build number set to 2"
 
       - name: Show Xcode version
         run: xcodebuild -version
@@ -110,7 +156,18 @@ jobs:
             CODE_SIGN_STYLE=Manual \
             CODE_SIGN_IDENTITY="Apple Distribution" \
             PROVISIONING_PROFILE_SPECIFIER="$PROFILE_UUID" \
+            CURRENT_PROJECT_VERSION=2 \
             archive
+
+      - name: Verify build number
+        run: |
+          set -euo pipefail
+
+          APP_PLIST="build/RoboRepair.xcarchive/Products/Applications/App.app/Info.plist"
+          BUILD_NUMBER=$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$APP_PLIST")
+
+          echo "Archived build number: $BUILD_NUMBER"
+          test "$BUILD_NUMBER" = "2"
 
       - name: Export App Store IPA
         run: |
@@ -146,6 +203,7 @@ jobs:
           path: build/export/*.ipa
           if-no-files-found: error
           retention-days: 14
+
       - name: Upload to App Store Connect
         if: github.event_name == 'workflow_dispatch'
         env:
@@ -176,4 +234,3 @@ jobs:
               --file "$IPA_PATH" \
               --apiKey "$ASC_KEY_ID" \
               --apiIssuer "$ASC_ISSUER_ID"
-
