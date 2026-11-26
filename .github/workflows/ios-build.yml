@@ -47,7 +47,7 @@ jobs:
 
           npx cap add ios
 
-      # 正式アイコンを反映
+      # Official app icon
       - name: Set Robo Repair app icon
         run: |
           set -euo pipefail
@@ -79,16 +79,16 @@ jobs:
 
           echo "Robo Repair app icon installed!"
 
-      # ビルド番号を2に変更
+      # Set build number to 3
       - name: Set iOS build number
         run: |
           set -euo pipefail
 
           /usr/libexec/PlistBuddy \
-            -c "Set :CFBundleVersion 2" \
+            -c "Set :CFBundleVersion 3" \
             ios/App/App/Info.plist
 
-          echo "iOS build number set to 2"
+          echo "iOS build number set to 3"
 
       - name: Show Xcode version
         run: xcodebuild -version
@@ -143,8 +143,11 @@ jobs:
           echo "TEAM_ID=$TEAM_ID" >> "$GITHUB_ENV"
           echo "PROFILE_UUID=$PROFILE_UUID" >> "$GITHUB_ENV"
 
+      # Archive iPhone-only app
       - name: Archive iOS app
         run: |
+          set -euo pipefail
+
           xcodebuild \
             -project ios/App/App.xcodeproj \
             -scheme App \
@@ -156,21 +159,47 @@ jobs:
             CODE_SIGN_STYLE=Manual \
             CODE_SIGN_IDENTITY="Apple Distribution" \
             PROVISIONING_PROFILE_SPECIFIER="$PROFILE_UUID" \
-            CURRENT_PROJECT_VERSION=2 \
+            CURRENT_PROJECT_VERSION=3 \
+            TARGETED_DEVICE_FAMILY=1 \
             archive
 
-      - name: Verify build number
+      # Verify iPhone-only support and build number
+      - name: Verify iPhone-only build
         run: |
           set -euo pipefail
 
-          APP_PLIST="build/RoboRepair.xcarchive/Products/Applications/App.app/Info.plist"
-          BUILD_NUMBER=$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$APP_PLIST")
+          python3 - <<'PY'
+          import plistlib
 
-          echo "Archived build number: $BUILD_NUMBER"
-          test "$BUILD_NUMBER" = "2"
+          path = (
+              "build/RoboRepair.xcarchive/"
+              "Products/Applications/App.app/Info.plist"
+          )
+
+          with open(path, "rb") as f:
+              info = plistlib.load(f)
+
+          build_number = str(info.get("CFBundleVersion", ""))
+          devices = info.get("UIDeviceFamily", [])
+
+          print(f"Archived build number: {build_number}")
+          print(f"Supported device families: {devices}")
+
+          if build_number != "3":
+              raise SystemExit("Build number is not 3")
+
+          if devices != [1]:
+              raise SystemExit(
+                  f"Expected iPhone-only [1], got {devices}"
+              )
+
+          print("iPhone-only build verified!")
+          PY
 
       - name: Export App Store IPA
         run: |
+          set -euo pipefail
+
           mkdir -p build/export
 
           python3 - <<'PY'
